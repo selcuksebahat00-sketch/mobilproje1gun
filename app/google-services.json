@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "783549072026",
+    "project_id": "kampustakip-a822e",
+    "storage_bucket": "kampustakip-a822e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:783549072026:android:4798ca6418b0a5b51c1523",
+        "android_client_info": {
+          "package_name": "com.sebahatselcuk.kampustakip"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDRLnxrgfADAoJwIQHedfNS8UHbiIOBHNY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
