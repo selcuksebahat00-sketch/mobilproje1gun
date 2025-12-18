@@ -1,5 +1,6 @@
 package com.sebahatselcuk.kampustakip
 import android.os.Bundle
+import android.webkit.WebView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -7,6 +8,7 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -22,6 +24,8 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.google.firebase.FirebaseApp
 // --- DATA MODELS ---
 data class User(val id: String="", val name: String="", val email: String="", val role: String="USER", val department: String="", val followedIncidents: List<String> = emptyList())
@@ -53,13 +57,13 @@ enum class Screen { LOGIN, REGISTER, FORGOT_PASS, FEED, MAP, CREATE, PROFILE, AD
 fun CampusApp() {
     var currentScreen by remember { mutableStateOf(Screen.LOGIN) }
     val context = LocalContext.current
-    // Sahte Veriler (2. Gün için)
+    // Sahte Veriler
     val dummyIncidents = listOf(
-        Incident("1", "TECH", "Projeksiyon Arızası", "B1-201 nolu sınıfta.", "OPEN", 0),
-        Incident("2", "HEALTH", "Merdiven Kaygan", "Giriş kapısı önü buzlanmış.", "IN_PROGRESS", 0),
-        Incident("3", "LOST_FOUND", "Mavi Cüzdan Bulundu", "Kütüphane girişinde.", "RESOLVED", 0)
+        Incident("1", "TECH", "Projeksiyon Arızası", "B1-201 nolu sınıfta.", "OPEN", System.currentTimeMillis()),
+        Incident("2", "HEALTH", "Merdiven Kaygan", "Giriş kapısı önü buzlanmış.", "IN_PROGRESS", System.currentTimeMillis()),
+        Incident("3", "LOST_FOUND", "Mavi Cüzdan", "Kütüphane masasında bulundu.", "RESOLVED", System.currentTimeMillis())
     )
-    val dummyUser = User("1", "Test Öğrenci", "test@ogr.com")
+    val dummyUser = User("1", "Simülasyon Kullanıcısı", "test@ogr.com", "USER", "Bilgisayar Müh.")
     MaterialTheme(colorScheme = lightColorScheme(background = Color(0xFF121212), surface = Color(0xFF1E1E1E), onSurface = Color.White)) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             when(currentScreen) {
@@ -77,7 +81,7 @@ fun CampusApp() {
                 )
                 Screen.FORGOT_PASS -> ForgotPasswordScreen(onBack = { currentScreen = Screen.LOGIN })
                 else -> {
-                    // İÇERİK EKRANLARI (Feed + Navbar)
+                    // Ana Uygulama İskeleti
                     Scaffold(
                         bottomBar = {
                             NavigationBar {
@@ -89,12 +93,12 @@ fun CampusApp() {
                         }
                     ) { p ->
                         Box(Modifier.padding(p)) {
-                            if(currentScreen == Screen.FEED) {
-                                FeedScreen(dummyIncidents, dummyUser)
-                            } else {
-                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Text("Bu ekran 3. gün eklenecek", color = Color.Gray)
-                                }
+                            when (currentScreen) {
+                                Screen.FEED -> FeedScreen(dummyIncidents, dummyUser)
+                                Screen.MAP -> MapScreen(dummyIncidents)
+                                Screen.CREATE -> CreateScreen()
+                                Screen.PROFILE -> ProfileScreen(dummyUser) { currentScreen = Screen.LOGIN }
+                                else -> Text("")
                             }
                         }
                     }
@@ -103,7 +107,7 @@ fun CampusApp() {
         }
     }
 }
-// --- EKRAN BİLEŞENLERİ ---
+// --- EKRAN BİLEŞENLERİ (Tüm ekranlar burada tanımlı) ---
 @Composable
 fun LoginScreen(onLogin: (String, String) -> Unit, onRegisterClick: () -> Unit, onForgotClick: () -> Unit) {
     var email by remember { mutableStateOf("") }
@@ -112,7 +116,7 @@ fun LoginScreen(onLogin: (String, String) -> Unit, onRegisterClick: () -> Unit, 
         Image(painter = painterResource(id = R.drawable.login_bg), contentDescription = null, contentScale = ContentScale.FillBounds, modifier = Modifier.fillMaxSize())
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)))
         Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Kampüs Takip Sistemi", style = MaterialTheme.typography.headlineMedium, color = Color.White, fontWeight = FontWeight.Bold)
+            Text("Kampüs Takip E.", style = MaterialTheme.typography.headlineMedium, color = Color.White, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(32.dp))
             OutlinedTextField(value = email, onValueChange = { email=it }, label = { Text("E-posta") }, modifier = Modifier.fillMaxWidth(), colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color.White.copy(alpha=0.9f), unfocusedContainerColor = Color.White.copy(alpha=0.8f)))
             Spacer(Modifier.height(8.dp))
@@ -172,6 +176,60 @@ fun FeedScreen(incidents: List<Incident>, user: User) {
                     }
                 }
             }
+        }
+    }
+}
+@Composable
+fun MapScreen(incidents: List<Incident>) {
+    val htmlContent = """
+        <!DOCTYPE html>
+        <html>
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"><link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" /><script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script><style>body{margin:0;}#map{width:100%;height:100%;}</style></head>
+        <body><div id="map"></div><script>
+            var map = L.map('map').setView([39.9255, 32.8662], 15);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+            var places = [${incidents.joinToString(",") { "{lat: 39.9255+${Math.random()*0.005}, lng: 32.8662+${Math.random()*0.005}, t:'${it.title}'}" }}];
+            places.forEach(p => L.marker([p.lat, p.lng]).addTo(map).bindPopup("<b>" + p.t + "</b>"));
+        </script></body></html>
+    """.trimIndent()
+    AndroidView({ ctx -> WebView(ctx).apply {
+        settings.javaScriptEnabled=true
+        loadDataWithBaseURL("https://example.com", htmlContent, "text/html", "UTF-8", null)
+    } }, Modifier.fillMaxSize())
+}
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CreateScreen() {
+    Column(Modifier.padding(16.dp)) {
+        Text("Yeni Bildirim Ekle", style = MaterialTheme.typography.headlineSmall, color = Color.White)
+        Spacer(Modifier.height(16.dp))
+        OutlinedTextField(value = "", onValueChange = {}, label = { Text("Başlık") }, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(value = "", onValueChange = {}, label = { Text("Açıklama") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+        Spacer(Modifier.height(16.dp))
+        Button(onClick = {}, modifier = Modifier.fillMaxWidth()) { Text("KAYDET (Test)") }
+    }
+}
+@Composable
+fun ProfileScreen(user: User, onLogout: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), modifier = Modifier.size(120.dp)) {
+            Box(contentAlignment = Alignment.Center) { Icon(Icons.Filled.Person, null, modifier = Modifier.size(80.dp), tint = MaterialTheme.colorScheme.primary) }
+        }
+        Spacer(Modifier.height(24.dp))
+        Text(user.name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White)
+        Text(user.department, style = MaterialTheme.typography.titleMedium, color = Color.Gray)
+        Spacer(Modifier.height(24.dp))
+        Surface(color = MaterialTheme.colorScheme.secondary, shape = RoundedCornerShape(50)) {
+            Text("Rol: ${user.role}", color = Color.White, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp), fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(64.dp))
+        Button(onClick = onLogout, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error), modifier = Modifier.fillMaxWidth(0.8f).height(56.dp)) {
+            Icon(Icons.Filled.Lock, null); Spacer(Modifier.width(12.dp)); Text("Çıkış Yap", fontSize = 18.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
