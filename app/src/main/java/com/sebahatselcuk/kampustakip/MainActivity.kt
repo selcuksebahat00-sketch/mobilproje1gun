@@ -27,6 +27,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.google.firebase.FirebaseApp
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
 // --- DATA MODELS ---
 data class User(val id: String="", val name: String="", val email: String="", val role: String="USER", val department: String="", val followedIncidents: List<String> = emptyList())
 data class Incident(val id: String="", val typeName: String="TECH", val title: String="", val description: String="", val statusName: String="OPEN", val date: Long=0, val authorId: String="") {
@@ -52,54 +55,182 @@ class MainActivity : ComponentActivity() {
         setContent { CampusApp() }
     }
 }
-enum class Screen { LOGIN, REGISTER, FORGOT_PASS, FEED, MAP, CREATE, PROFILE, ADMIN }
+enum class Screen { LOGIN, REGISTER, FORGOT_PASS, FEED, MAP, CREATE, DETAIL, PROFILE, ADMIN, SPLASH }
 @Composable
 fun CampusApp() {
-    var currentScreen by remember { mutableStateOf(Screen.LOGIN) }
     val context = LocalContext.current
-    // Sahte Veriler
-    val dummyIncidents = listOf(
-        Incident("1", "TECH", "Projeksiyon Arızası", "B1-201 nolu sınıfta.", "OPEN", System.currentTimeMillis()),
-        Incident("2", "HEALTH", "Merdiven Kaygan", "Giriş kapısı önü buzlanmış.", "IN_PROGRESS", System.currentTimeMillis()),
-        Incident("3", "LOST_FOUND", "Mavi Cüzdan", "Kütüphane masasında bulundu.", "RESOLVED", System.currentTimeMillis())
-    )
-    val dummyUser = User("1", "Simülasyon Kullanıcısı", "test@ogr.com", "USER", "Bilgisayar Müh.")
+    val auth = FirebaseAuth.getInstance()
+    val db = FirebaseFirestore.getInstance()
+    var currentUser by remember { mutableStateOf<User?>(null) }
+    var incidents by remember { mutableStateOf<List<Incident>>(emptyList()) }
+    var currentScreen by remember { mutableStateOf(Screen.SPLASH) }
+    var selectedIncident by remember { mutableStateOf<Incident?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    // AUTH LISTENER
+    LaunchedEffect(Unit) {
+        val firebaseUser = auth.currentUser
+        if (firebaseUser != null) {
+            db.collection("users").document(firebaseUser.uid).get()
+                .addOnSuccessListener { doc ->
+                    if (doc.exists()) {
+                        currentUser = doc.toObject(User::class.java)?.copy(id = firebaseUser.uid)
+                        currentScreen = Screen.FEED
+                    } else {
+                        auth.signOut()
+                        currentScreen = Screen.LOGIN
+                    }
+                }
+                .addOnFailureListener { currentScreen = Screen.LOGIN }
+        } else {
+            currentScreen = Screen.LOGIN
+        }
+    }
+    // DATA LISTENER
+    LaunchedEffect(currentUser) {
+        if (currentUser != null) {
+            db.collection("incidents").orderBy("date", Query.Direction.DESCENDING)
+                .addSnapshotListener { snapshot, _ ->
+                    if (snapshot != null) {
+                        incidents = snapshot.documents.mapNotNull { doc -> doc.toObject(Incident::class.java)?.copy(id = doc.id) }
+                    }
+                }
+        }
+    }
+    // --- ACTIONS ---
+    fun login(email: String, pass: String) {
+        if (email.isBlank() || pass.isBlank()) return
+        isLoading = true
+        auth.signInWithEmailAndPassword(email, pass).addOnSuccessListener { res ->
+            val uid = res.user?.uid
+            if (uid != null) {
+                db.collection("users").document(uid).get().addOnSuccessListener { doc ->
+                    isLoading = false
+                    currentUser = doc.toObject(User::class.java)?.copy(id = uid)
+                    currentScreen = Screen.FEED
+                }
+            }
+        }.addOnFailureListener { isLoading = false; errorMessage = it.localizedMessage }
+    }
+    fun register(name: String, email: String, pass: String, dept: String) {
+        if (email.isBlank() || pass.isBlank()) return
+        isLoading = true
+        auth.createUserWithEmailAndPassword(email, pass).addOnSuccessListener { res ->
+            val uid = res.user?.uid
+            if (uid != null) {
+                val role = if (email.lowercase().contains("admin")) "ADMIN" else "USER"
+                val newUser = User(id = uid, name = name, email = email, role = role, department = dept)
+                db.collection("users").document(uid).set(newUser).addOnSuccessListener {
+                    isLoading = false; currentUser = newUser; currentScreen = Screen.FEED
+                }
+            }
+        }.addOnFailureListener { isLoading = false; errorMessage = it.localizedMessage }
+    }
+    fun logout() { auth.signOut(); currentUser = null; currentScreen = Screen.LOGIN }
+
+    fun addIncident(type: IncidentType, title: String, desc: String) {
+        val u = currentUser ?: return
+        val newInc = Incident(typeName = type.name, title = title, description = desc, statusName = "OPEN", date = System.currentTimeMillis(), authorId = u.id)
+        db.collection("incidents").add(newInc)
+    }
+    fun toggleFollow(incId: String) {
+        val u = currentUser ?: return
+        val newFollows = if (u.followedIncidents.contains(incId)) u.followedIncidents - incId else u.followedIncidents + incId
+        currentUser = u.copy(followedIncidents = newFollows)
+        db.collection("users").document(u.id).update("followedIncidents", newFollows)
+    }
     MaterialTheme(colorScheme = lightColorScheme(background = Color(0xFF121212), surface = Color(0xFF1E1E1E), onSurface = Color.White)) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            when(currentScreen) {
-                Screen.LOGIN -> LoginScreen(
-                    onLogin = { _, _ ->
-                        Toast.makeText(context, "Giriş Yapıldı (Simülasyon)", Toast.LENGTH_SHORT).show()
-                        currentScreen = Screen.FEED
-                    },
-                    onRegisterClick = { currentScreen = Screen.REGISTER },
-                    onForgotClick = { currentScreen = Screen.FORGOT_PASS }
-                )
-                Screen.REGISTER -> RegisterScreen(
-                    onRegister = { _, _, _, _ -> currentScreen = Screen.LOGIN },
-                    onLoginClick = { currentScreen = Screen.LOGIN }
-                )
-                Screen.FORGOT_PASS -> ForgotPasswordScreen(onBack = { currentScreen = Screen.LOGIN })
-                else -> {
-                    // Ana Uygulama İskeleti
+            Box(Modifier.fillMaxSize()) {
+                if (currentScreen == Screen.SPLASH || isLoading) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+                } else if (currentUser == null) {
+                    when (currentScreen) {
+                        Screen.REGISTER -> RegisterScreen(onRegister = { n, e, p, d -> register(n, e, p, d) }, onLoginClick = { currentScreen = Screen.LOGIN })
+                        Screen.FORGOT_PASS -> ForgotPasswordScreen(onBack = { currentScreen = Screen.LOGIN })
+                        else -> LoginScreen(onLogin = { e, p -> login(e, p) }, onRegisterClick = { currentScreen = Screen.REGISTER }, onForgotClick = { currentScreen = Screen.FORGOT_PASS })
+                    }
+                } else {
                     Scaffold(
                         bottomBar = {
-                            NavigationBar {
-                                NavigationBarItem(selected = currentScreen == Screen.FEED, onClick = { currentScreen = Screen.FEED }, icon = { Icon(Icons.Filled.Home, null) }, label = { Text("Akış") })
-                                NavigationBarItem(selected = currentScreen == Screen.MAP, onClick = { currentScreen = Screen.MAP }, icon = { Icon(Icons.Filled.LocationOn, null) }, label = { Text("Harita") })
-                                NavigationBarItem(selected = currentScreen == Screen.CREATE, onClick = { currentScreen = Screen.CREATE }, icon = { Icon(Icons.Filled.AddCircle, null) }, label = { Text("Ekle") })
-                                NavigationBarItem(selected = currentScreen == Screen.PROFILE, onClick = { currentScreen = Screen.PROFILE }, icon = { Icon(Icons.Filled.Person, null) }, label = { Text("Profil") })
+                            if (currentScreen != Screen.DETAIL) {
+                                NavigationBar {
+                                    NavigationBarItem(selected = currentScreen == Screen.FEED, onClick = { currentScreen = Screen.FEED }, icon = { Icon(Icons.Filled.Home, null) }, label = { Text("Akış") })
+                                    NavigationBarItem(selected = currentScreen == Screen.MAP, onClick = { currentScreen = Screen.MAP }, icon = { Icon(Icons.Filled.LocationOn, null) }, label = { Text("Harita") })
+                                    NavigationBarItem(selected = currentScreen == Screen.CREATE, onClick = { currentScreen = Screen.CREATE }, icon = { Icon(Icons.Filled.AddCircle, null) }, label = { Text("Ekle") })
+                                    if(currentUser?.role == "ADMIN") NavigationBarItem(selected = currentScreen == Screen.ADMIN, onClick = { currentScreen = Screen.ADMIN }, icon = { Icon(Icons.Filled.Settings, null) }, label = { Text("Ynt") })
+                                    NavigationBarItem(selected = currentScreen == Screen.PROFILE, onClick = { currentScreen = Screen.PROFILE }, icon = { Icon(Icons.Filled.Person, null) }, label = { Text("Profil") })
+                                }
                             }
                         }
                     ) { p ->
                         Box(Modifier.padding(p)) {
                             when (currentScreen) {
-                                Screen.FEED -> FeedScreen(dummyIncidents, dummyUser)
-                                Screen.MAP -> MapScreen(dummyIncidents)
-                                Screen.CREATE -> CreateScreen()
-                                Screen.PROFILE -> ProfileScreen(dummyUser) { currentScreen = Screen.LOGIN }
+                                Screen.FEED -> FeedScreen(incidents, currentUser!!) { selectedIncident = it; currentScreen = Screen.DETAIL }
+                                Screen.MAP -> MapScreen(incidents)
+                                Screen.CREATE -> CreateScreen { t, ti, d -> addIncident(t, ti, d); currentScreen = Screen.FEED }
+                                Screen.PROFILE -> ProfileScreen(currentUser!!, incidents) { logout() }
+                                Screen.DETAIL -> DetailScreen(selectedIncident, currentUser!!) { currentScreen = Screen.FEED; toggleFollow(it) }
+                                Screen.ADMIN -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Yönetici Paneli (Son Gün Eklenecek)") }
                                 else -> Text("")
                             }
+                        }
+                    }
+                }
+                if (errorMessage != null) {
+                    AlertDialog(onDismissRequest = { errorMessage = null }, confirmButton = { Button(onClick = { errorMessage = null }) { Text("OK") } }, title = { Text("Hata") }, text = { Text(errorMessage!!) })
+                }
+            }
+        }
+    }
+}
+// --- FULL SCREENS (Feed with Filters, Map with Dates) ---
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FeedScreen(incidents: List<Incident>, user: User, onDetail: (Incident) -> Unit) {
+    var filterType by remember { mutableStateOf<IncidentType?>(null) }
+    var filterStatus by remember { mutableStateOf<IncidentStatus?>(null) }
+    var showOnlyFollowed by remember { mutableStateOf(false) }
+    val filtered = incidents.filter { inc ->
+        val typeMatch = filterType == null || inc.getTypeEnum() == filterType
+        val statusMatch = filterStatus == null || inc.getStatusEnum() == filterStatus
+        val followMatch = if (showOnlyFollowed) user.followedIncidents.contains(inc.id) else true
+        typeMatch && statusMatch && followMatch
+    }
+    Column {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                FilterChip(selected = showOnlyFollowed, onClick = { showOnlyFollowed = !showOnlyFollowed }, label = { Text("Takip Ettiklerim") }, leadingIcon = if (showOnlyFollowed) {{ Icon(Icons.Filled.Check, null) }} else null)
+                Spacer(Modifier.width(8.dp))
+                IncidentStatus.values().forEach { s ->
+                    FilterChip(selected = filterStatus == s, onClick = { filterStatus = if(filterStatus==s) null else s }, label = { Text(s.label) }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = s.color.copy(alpha=0.2f)))
+                    Spacer(Modifier.width(4.dp))
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                FilterChip(selected = filterType==null, onClick = { filterType=null }, label = { Text("Tüm Tipler") })
+                IncidentType.values().forEach { t ->
+                    Spacer(Modifier.width(4.dp))
+                    FilterChip(selected = filterType==t, onClick = { filterType = if(filterType==t) null else t }, label = { Text(t.label) })
+                }
+            }
+        }
+        if (incidents.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Veri yok veya yükleniyor...", color = Color.Gray) }
+        else if (filtered.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Filtrelere uygun sonuç yok.", color = Color.Gray) }
+        else {
+            LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(filtered) { inc ->
+                    Card(onClick = { onDetail(inc) }, modifier = Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(inc.getTypeEnum().icon, null, tint = inc.getTypeEnum().color)
+                                Spacer(Modifier.width(8.dp))
+                                Text(inc.title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                                Badge(containerColor = inc.getStatusEnum().color) { Text(inc.getStatusEnum().label, color = Color.White, modifier = Modifier.padding(horizontal = 4.dp)) }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Text(inc.description, maxLines = 2, style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                 }
@@ -107,16 +238,74 @@ fun CampusApp() {
         }
     }
 }
-// --- EKRAN BİLEŞENLERİ (Tüm ekranlar burada tanımlı) ---
 @Composable
-fun LoginScreen(onLogin: (String, String) -> Unit, onRegisterClick: () -> Unit, onForgotClick: () -> Unit) {
+fun MapScreen(incidents: List<Incident>) {
+    val dateFormat = java.text.SimpleDateFormat("dd.MM.yyyy HH:mm", java.util.Locale.getDefault())
+    val htmlContent = """
+        <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"><link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" /><script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script><style>body{margin:0;width:100vw;height:100vh;}#map{width:100%;height:100%;}</style></head>
+        <body><div id="map"></div><script>
+            var map = L.map('map').setView([39.9255, 32.8662], 15);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+            var places = [${incidents.joinToString(",") {
+        val dateStr = dateFormat.format(java.util.Date(it.date))
+        "{lat: 39.9255+${Math.random()*0.005}, lng: 32.8662+${Math.random()*0.005}, t:'${it.title}', d:'$dateStr'}"
+    }}];
+            places.forEach(p => L.marker([p.lat, p.lng]).addTo(map).bindPopup("<b>" + p.t + "</b><br><small>" + p.d + "</small>"));
+        </script></body></html>
+    """.trimIndent()
+    AndroidView({ ctx -> WebView(ctx).apply {
+        layoutParams = android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
+        settings.javaScriptEnabled=true; settings.domStorageEnabled=true
+        loadDataWithBaseURL("https://example.com", htmlContent, "text/html", "UTF-8", null)
+    } }, Modifier.fillMaxSize())
+}
+@Composable
+fun DetailScreen(incident: Incident?, user: User, onAction: (String) -> Unit) {
+    if (incident == null) return
+    val type = incident.getTypeEnum()
+    val status = incident.getStatusEnum()
+    val isFollowing = user.followedIncidents.contains(incident.id)
+    Column(Modifier.padding(24.dp).verticalScroll(rememberScrollState())) {
+        Text(type.label, color = type.color)
+        Text(incident.title, style = MaterialTheme.typography.headlineMedium)
+        Text(status.label, color = status.color, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(16.dp))
+        Text(incident.description)
+        Spacer(Modifier.height(32.dp))
+        Button(onClick = { onAction(incident.id) }, modifier = Modifier.fillMaxWidth()) { Text(if(isFollowing) "Takibi Bırak" else "Takip Et") }
+        TextButton(onClick = { onAction("") }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Geri") }
+    }
+}
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CreateScreen(onSubmit: (IncidentType, String, String) -> Unit) {
+    var title by remember { mutableStateOf("") }
+    var desc by remember { mutableStateOf("") }
+    var type by remember { mutableStateOf(IncidentType.TECH) }
+    Column(Modifier.padding(16.dp)) {
+        Text("Yeni Bildirim", style = MaterialTheme.typography.headlineSmall)
+        Row(Modifier.horizontalScroll(rememberScrollState())) {
+            IncidentType.values().forEach { t ->
+                FilterChip(selected = type == t, onClick = { type = t }, label = { Text(t.label) })
+                Spacer(Modifier.width(8.dp))
+            }
+        }
+        OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Başlık") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(value = desc, onValueChange = { desc = it }, label = { Text("Açıklama") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
+        Button(onClick = { onSubmit(type, title, desc) }, modifier = Modifier.fillMaxWidth()) { Text("KAYDET") }
+    }
+}
+// ... (LoginScreen, RegisterScreen, ForgotPasswordScreen, ProfileScreen - Önceki günlerden aynı) ...
+// (Lütfen bu fonksiyonları 3. günden veya 5. gün kodundan kopyalayın, ama yer kaplamaması için buraya tekrar yazmıyorum,
+//  ancak SİYAH EKRAN OLMAMASI İÇİN `LoginScreen` vb. fonksiyonların kodda yer aldığından emin olun.)
+@Composable fun LoginScreen(onLogin: (String, String) -> Unit, onRegisterClick: () -> Unit, onForgotClick: () -> Unit) { /* ... 3. Gün Kodunun Aynısı ... */
     var email by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
     Box(modifier = Modifier.fillMaxSize()) {
         Image(painter = painterResource(id = R.drawable.login_bg), contentDescription = null, contentScale = ContentScale.FillBounds, modifier = Modifier.fillMaxSize())
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)))
         Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Kampüs Takip E.", style = MaterialTheme.typography.headlineMedium, color = Color.White, fontWeight = FontWeight.Bold)
+            Text("Kampüs Takip Sistemi", style = MaterialTheme.typography.headlineMedium, color = Color.White, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(32.dp))
             OutlinedTextField(value = email, onValueChange = { email=it }, label = { Text("E-posta") }, modifier = Modifier.fillMaxWidth(), colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = Color.White.copy(alpha=0.9f), unfocusedContainerColor = Color.White.copy(alpha=0.8f)))
             Spacer(Modifier.height(8.dp))
@@ -130,106 +319,34 @@ fun LoginScreen(onLogin: (String, String) -> Unit, onRegisterClick: () -> Unit, 
     }
 }
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun RegisterScreen(onRegister: (String, String, String, String) -> Unit, onLoginClick: () -> Unit) {
+@Composable fun RegisterScreen(onRegister: (String, String, String, String) -> Unit, onLoginClick: () -> Unit) {
+    // ... Simplified Register code for brevity, ensure full code is used in real file ...
     var name by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
     var dept by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center) {
-        Text("Kayıt Ol", style = MaterialTheme.typography.headlineMedium, color = Color.White)
-        Spacer(Modifier.height(16.dp))
+        Text("Kayıt Ol", style = MaterialTheme.typography.headlineMedium, color = Color.White); Spacer(Modifier.height(16.dp))
         OutlinedTextField(value = name, onValueChange = { name=it }, label = { Text("İsim") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(value = email, onValueChange = { email=it }, label = { Text("E-posta") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(value = pass, onValueChange = { pass=it }, label = { Text("Şifre") }, modifier = Modifier.fillMaxWidth(), visualTransformation = PasswordVisualTransformation())
         OutlinedTextField(value = dept, onValueChange = { dept=it }, label = { Text("Birim") }, modifier = Modifier.fillMaxWidth())
-        Spacer(Modifier.height(16.dp))
-        Button(onClick = { onRegister(name, email, pass, dept) }, modifier = Modifier.fillMaxWidth()) { Text("Kaydol") }
-        TextButton(onClick = onLoginClick, modifier = Modifier.fillMaxWidth()) { Text("Giriş'e Dön") }
+        Spacer(Modifier.height(16.dp)); Button(onClick = { onRegister(name, email, pass, dept) }, modifier = Modifier.fillMaxWidth()) { Text("Kaydol") }; TextButton(onClick = onLoginClick, modifier = Modifier.fillMaxWidth()) { Text("Giriş'e Dön") }
     }
 }
-@Composable
-fun ForgotPasswordScreen(onBack: () -> Unit) {
+@Composable fun ForgotPasswordScreen(onBack: () -> Unit) {
     var email by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.Center) {
-        Text("Şifre Sıfırlama", color=Color.White, style = MaterialTheme.typography.headlineMedium)
-        OutlinedTextField(value = email, onValueChange = { email=it }, label = { Text("E-posta") }, modifier = Modifier.fillMaxWidth())
-        Button(onClick = { }, modifier = Modifier.fillMaxWidth()) { Text("Gönder") }
-        TextButton(onClick = onBack) { Text("Geri") }
+        Text("Şifre Sıfırlama", color=Color.White); OutlinedTextField(value = email, onValueChange = { email=it }, label = { Text("E-posta") }, modifier = Modifier.fillMaxWidth())
+        Button(onClick = { }, modifier = Modifier.fillMaxWidth()) { Text("Gönder") }; TextButton(onClick = onBack) { Text("Geri") }
     }
 }
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun FeedScreen(incidents: List<Incident>, user: User) {
-    LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        items(incidents) { inc ->
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(inc.getTypeEnum().icon, null, tint = inc.getTypeEnum().color)
-                    Spacer(Modifier.width(8.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(inc.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                        Text(inc.description, style = MaterialTheme.typography.bodySmall, maxLines = 1)
-                    }
-                    Surface(color = inc.getStatusEnum().color, shape = RoundedCornerShape(4.dp)) {
-                        Text(inc.getStatusEnum().label, color = Color.White, modifier = Modifier.padding(horizontal = 4.dp), style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-            }
-        }
-    }
-}
-@Composable
-fun MapScreen(incidents: List<Incident>) {
-    val htmlContent = """
-        <!DOCTYPE html>
-        <html>
-        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"><link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" /><script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script><style>body{margin:0;}#map{width:100%;height:100%;}</style></head>
-        <body><div id="map"></div><script>
-            var map = L.map('map').setView([39.9255, 32.8662], 15);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
-            var places = [${incidents.joinToString(",") { "{lat: 39.9255+${Math.random()*0.005}, lng: 32.8662+${Math.random()*0.005}, t:'${it.title}'}" }}];
-            places.forEach(p => L.marker([p.lat, p.lng]).addTo(map).bindPopup("<b>" + p.t + "</b>"));
-        </script></body></html>
-    """.trimIndent()
-    AndroidView({ ctx -> WebView(ctx).apply {
-        settings.javaScriptEnabled=true
-        loadDataWithBaseURL("https://example.com", htmlContent, "text/html", "UTF-8", null)
-    } }, Modifier.fillMaxSize())
-}
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun CreateScreen() {
-    Column(Modifier.padding(16.dp)) {
-        Text("Yeni Bildirim Ekle", style = MaterialTheme.typography.headlineSmall, color = Color.White)
+@Composable fun ProfileScreen(user: User, incidents: List<Incident>, onLogout: () -> Unit) {
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(Icons.Filled.Person, null, modifier = Modifier.size(80.dp), tint = Color.White)
+        Text(user.name, style = MaterialTheme.typography.headlineMedium, color = Color.White)
+        Text(user.department, color = Color.Gray)
         Spacer(Modifier.height(16.dp))
-        OutlinedTextField(value = "", onValueChange = {}, label = { Text("Başlık") }, modifier = Modifier.fillMaxWidth())
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(value = "", onValueChange = {}, label = { Text("Açıklama") }, modifier = Modifier.fillMaxWidth(), minLines = 3)
-        Spacer(Modifier.height(16.dp))
-        Button(onClick = {}, modifier = Modifier.fillMaxWidth()) { Text("KAYDET (Test)") }
-    }
-}
-@Composable
-fun ProfileScreen(user: User, onLogout: () -> Unit) {
-    Column(
-        Modifier.fillMaxSize().padding(16.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), modifier = Modifier.size(120.dp)) {
-            Box(contentAlignment = Alignment.Center) { Icon(Icons.Filled.Person, null, modifier = Modifier.size(80.dp), tint = MaterialTheme.colorScheme.primary) }
-        }
-        Spacer(Modifier.height(24.dp))
-        Text(user.name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.White)
-        Text(user.department, style = MaterialTheme.typography.titleMedium, color = Color.Gray)
-        Spacer(Modifier.height(24.dp))
-        Surface(color = MaterialTheme.colorScheme.secondary, shape = RoundedCornerShape(50)) {
-            Text("Rol: ${user.role}", color = Color.White, modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp), fontWeight = FontWeight.Bold)
-        }
-        Spacer(Modifier.height(64.dp))
-        Button(onClick = onLogout, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error), modifier = Modifier.fillMaxWidth(0.8f).height(56.dp)) {
-            Icon(Icons.Filled.Lock, null); Spacer(Modifier.width(12.dp)); Text("Çıkış Yap", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-        }
+        Button(onClick = onLogout, colors = ButtonDefaults.buttonColors(containerColor = Color.Red)) { Text("Çıkış Yap") }
     }
 }
